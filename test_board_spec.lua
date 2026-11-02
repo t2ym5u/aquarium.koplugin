@@ -128,12 +128,28 @@ describe("AquariumBoard", function()
             end
         end)
 
-        it("hard puzzles at 8x8 mostly need trial reasoning (tier 3)", function()
-            local hard = 0
-            for seed = 1, 8 do
-                if newBoard(8, "hard", seed).tier == 3 then hard = hard + 1 end
+        -- Trial reasoning (tier 3) plays as guessing on paper: no level may
+        -- need it. Hard is harder through more hidden clues instead.
+        it("never needs trial reasoning; hard hides more clues than medium", function()
+            local function hidden(b)
+                local h = 0
+                for k = 1, b.n do
+                    if b.row_clues[k] == false then h = h + 1 end
+                    if b.col_clues[k] == false then h = h + 1 end
+                end
+                return h
             end
-            assert.is_true(hard >= 6)
+            local med, hard = 0, 0
+            for seed = 1, 8 do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local b = newBoard(8, diff, seed)
+                    local st = Solver.solve(b:getProblem(), 2)
+                    assert.are.equal("solved", st)
+                    if diff == "medium" then med = med + hidden(b) end
+                    if diff == "hard" then hard = hard + hidden(b) end
+                end
+            end
+            assert.is_true(hard > med)
         end)
     end)
 
