@@ -33,13 +33,16 @@ local DIR4 = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }
 --   avg_tank  average tank size the region generator aims for (smaller tanks
 --             make more, tighter interactions between lines);
 --   tier      the solver tier the puzzle must need (see solver.lua): 1 = bound
---             reasoning on single lines, 2 = exact line reasoning, 3 = trial;
+--             reasoning on single lines, 2 = exact line reasoning. Tier 3
+--             (trial: assume a level, look for a contradiction) is never
+--             asked for: on paper it plays as guessing, so hard is harder
+--             through more hidden clues and smaller tanks instead;
 --   max_hide  how many row/column clues may be hidden (function of n). Easy
 --             shows every clue.
 local LEVELS = {
     easy   = { avg_tank = 4.5, tier = 1, max_hide = function()  return 0 end },
-    medium = { avg_tank = 3.5, tier = 2, max_hide = function(n) return n <= 6 and n or math.floor(n / 2) end },
-    hard   = { avg_tank = 3.5, tier = 3, max_hide = function(n) return 2 * n end },
+    medium = { avg_tank = 3.5, tier = 2, max_hide = function(n) return math.floor(n / 3) end },
+    hard   = { avg_tank = 3.0, tier = 2, max_hide = function(n) return 2 * n end },
 }
 
 local MAX_ATTEMPTS = 50

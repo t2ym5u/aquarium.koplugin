@@ -24,9 +24,10 @@ The grid is divided into tanks by thick walls. Fill some cells with water:
   - *Easy* — every clue shown, solvable line by line from simple bounds
     ("even with every other tank empty this row is short, so this tank must
     fill").
-  - *Medium* — some clues hidden; needs exact counting along a line (which
+  - *Medium* — a few clues hidden; needs exact counting along a line (which
     combinations of tank levels make the row add up).
-  - *Hard* — more clues hidden; needs one-step "what if" reasoning.
+  - *Hard* — smaller tanks and many more clues hidden, still solved by line
+    reasoning alone: no level ever needs "what if" trial and error.
 - **Unique solution, proven** — the generator's solver deduces every tank's
   level from the clues before a puzzle is shown.
 - **Gravity built in** — a tap moves a whole water level, so the grid never
