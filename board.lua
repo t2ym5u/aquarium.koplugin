@@ -45,7 +45,17 @@ local LEVELS = {
     hard   = { avg_tank = 3.0, tier = 2, max_hide = function(n) return 2 * n end },
 }
 
-local MAX_ATTEMPTS = 50
+-- Candidate grids: MAX_ATTEMPTS tank layouts, LEVEL_ROLLS random water
+-- levels on each. A new set of levels on the same tanks only changes the
+-- clue values, so the solver's work on those tanks carries over: it costs
+-- a fraction of a new layout.
+-- MAX_SOLVES caps the whole search, counted in solver runs (never in time,
+-- so that a seed gives the same puzzle on every device): on 6x6, where
+-- line reasoning is rarely needed at all, it is what bounds the time, and
+-- the hardest grid found so far is kept.
+local MAX_ATTEMPTS = 25
+local LEVEL_ROLLS  = 4
+local MAX_SOLVES   = 1000
 
 -- ---------------------------------------------------------------------------
 -- Generator
@@ -133,26 +143,38 @@ end
 -- The solver's view: one variable per tank, option k (1..#rows) = water up to
 -- rows[k] (every tank cell at that row or below is filled), option #rows+1 =
 -- dry. Each row/column clue is a sum over the tanks crossing that line.
--- `cache` (optional, one per set of tanks) keeps the sum tables between the
--- many problems a dig builds: a sum only depends on the tanks and its clue,
--- and the solver never writes to one (it memoises on it, which is why
--- sharing it pays).
-local function buildProblem(n, tanks, row_clues, col_clues, cache)
-    local P = { nvars = #tanks, ksize = {}, sums = {} }
-    for t, tk in ipairs(tanks) do P.ksize[t] = #tk.rows + 1 end
+-- The generator builds one problem per candidate grid, with every clue,
+-- and hides clues by switching their sums off (P.off): `row_sum[r]` and
+-- `col_sum[c]` give the sums' indices.
+local function buildProblem(n, tanks, row_clues, col_clues)
+    local P = { nvars = #tanks, ksize = {}, sums = {}, row_sum = {}, col_sum = {} }
+    -- per tank, how many of its cells lie in each row, and in each column
+    -- at or below each level
+    local in_row, in_col = {}, {}
+    for t, tk in ipairs(tanks) do
+        P.ksize[t] = #tk.rows + 1
+        local rows, cols = {}, {}
+        for _, p in ipairs(tk.cells) do
+            rows[p[1]] = (rows[p[1]] or 0) + 1
+            local col = cols[p[2]]
+            if not col then
+                col = {}
+                for k = 1, #tk.rows + 1 do col[k] = 0 end
+                cols[p[2]] = col
+            end
+            for k = 1, #tk.rows do
+                if p[1] >= tk.rows[k] then col[k] = col[k] + 1 end
+            end
+        end
+        in_row[t], in_col[t] = rows, cols
+    end
 
     for r = 1, n do
-        local key = cache and row_clues[r] and ("r" .. r .. ":" .. row_clues[r])
-        if key and cache[key] then
-            P.sums[#P.sums + 1] = cache[key]
-        elseif row_clues[r] then
+        if row_clues[r] then
             local s = { clue = row_clues[r], vars = {}, contrib = {} }
             for t, tk in ipairs(tanks) do
-                local cnt = 0
-                for _, p in ipairs(tk.cells) do
-                    if p[1] == r then cnt = cnt + 1 end
-                end
-                if cnt > 0 then
+                local cnt = in_row[t][r]
+                if cnt then
                     local cc = {}
                     for k = 1, #tk.rows do cc[k] = (tk.rows[k] <= r) and cnt or 0 end
                     cc[#tk.rows + 1] = 0
@@ -160,34 +182,20 @@ local function buildProblem(n, tanks, row_clues, col_clues, cache)
                 end
             end
             P.sums[#P.sums + 1] = s
-            if key then cache[key] = s end
+            P.row_sum[r] = #P.sums
         end
     end
     for c = 1, n do
-        local key = cache and col_clues[c] and ("c" .. c .. ":" .. col_clues[c])
-        if key and cache[key] then
-            P.sums[#P.sums + 1] = cache[key]
-        elseif col_clues[c] then
+        if col_clues[c] then
             local s = { clue = col_clues[c], vars = {}, contrib = {} }
-            for t, tk in ipairs(tanks) do
-                local in_col = false
-                local cc = {}
-                for k = 1, #tk.rows + 1 do
-                    local level, cnt = tk.rows[k], 0
-                    for _, p in ipairs(tk.cells) do
-                        if p[2] == c then
-                            in_col = true
-                            if level and p[1] >= level then cnt = cnt + 1 end
-                        end
-                    end
-                    cc[k] = cnt
-                end
-                if in_col then
+            for t = 1, #tanks do
+                local cc = in_col[t][c]
+                if cc then
                     s.vars[#s.vars + 1], s.contrib[#s.contrib + 1] = t, cc
                 end
             end
             P.sums[#P.sums + 1] = s
-            if key then cache[key] = s end
+            P.col_sum[c] = #P.sums
         end
     end
     return P
@@ -206,23 +214,92 @@ end
 
 -- Hides clues one by one (random order) while the puzzle stays solvable
 -- within `cap`. Returns the final clues and the tier the last solve needed.
-local function digClues(n, tanks, rc, cc, cap, max_hide, tier, cache, on_try)
+-- `P` is the problem with every clue shown; a try switches the hidden
+-- clues' sums off (P.off) instead of building a new problem, and is solved
+-- incrementally (Solver.trial) from the clues that stay shown whatever
+-- happens next -- those not tried yet, or tried and kept -- with the same
+-- result as a solve from scratch.
+-- `seek`: first look for the clues whose hiding brings the puzzle up to
+-- tier `cap` (see below) instead of hiding in plain random order; used when
+-- the plain dig of a grid falls short of the level.
+local function digClues(n, P, rc, cc, cap, max_hide, tier, seek, on_try)
     local order = {}
     for i = 1, 2 * n do order[i] = i end
     shuffle(order)
-    local hidden = 0
-    for _, i in ipairs(order) do
-        if hidden >= max_hide then break end
-        local R, C = {}, {}
-        for k = 1, n do R[k], C[k] = rc[k], cc[k] end
-        if i <= n then R[i] = false else C[i - n] = false end
+    if max_hide <= 0 then return rc, cc, tier end
+    local function sumOf(i)
+        if i <= n then return P.row_sum[i] end
+        return P.col_sum[i - n]
+    end
+    -- cand: clues that may still be hidden, in dig order. A clue that
+    -- cannot be hidden now never can later (hiding more only takes
+    -- information away), so it leaves for good and joins the base.
+    local cand = {}
+    for t = 1, #order do cand[t] = order[t] end
+    local hidden, nhidden = {}, 0
+    local function offWith(with_cand, extra)
+        local off = {}
+        for i in pairs(hidden) do off[sumOf(i)] = true end
+        if with_cand then
+            for _, i in ipairs(cand) do off[sumOf(i)] = true end
+        end
+        if extra then off[sumOf(extra)] = true end
+        return off
+    end
+    P.off = offWith(true)
+    local base = Solver.newBase(P, cap)
+    local function try(i)
         if on_try then on_try() end
-        local st, t2 = Solver.solve(buildProblem(n, tanks, R, C, cache), cap)
-        if st == "solved" then
-            rc, cc, tier, hidden = R, C, t2, hidden + 1
+        P.off = offWith(false, i)
+        return Solver.trial(P, base)
+    end
+    local function drop(j)   -- cand[j] stays shown for good
+        table.remove(cand, j)
+        P.off = offWith(true)
+        Solver.extendBase(P, base)
+    end
+    local function hide(j, t2)
+        hidden[cand[j]], nhidden, tier = true, nhidden + 1, t2
+        table.remove(cand, j)
+    end
+    -- While the hardest step is below the level's tier, each round tries
+    -- every candidate and hides the first one that brings the puzzle to
+    -- that tier -- or else the first one that keeps it solvable. Once the
+    -- tier is reached, hiding more keeps it there (or makes the puzzle
+    -- unsolvable), so the rest is a plain dig in order.
+    while seek and nhidden < max_hide and tier < cap and #cand > 0 do
+        local first, j = nil, 1
+        local found = false
+        while j <= #cand do
+            local st, t2 = try(cand[j])
+            if st ~= "solved" then
+                drop(j)
+            elseif t2 >= cap then
+                hide(j, t2)
+                found = true
+                break
+            else
+                first = first or j
+                j = j + 1
+            end
+        end
+        if not found then
+            if not first then break end
+            hide(first, 1)
         end
     end
-    return rc, cc, tier
+    local j = 1
+    while nhidden < max_hide and j <= #cand do
+        local st, t2 = try(cand[j])
+        if st == "solved" then hide(j, t2) else drop(j) end
+    end
+    P.off = nil
+    local R, C = {}, {}
+    for k = 1, n do
+        R[k] = not hidden[k] and rc[k]
+        C[k] = not hidden[n + k] and cc[k]
+    end
+    return R, C, tier
 end
 
 -- One complete puzzle for (n, difficulty). Every candidate is proven unique by
@@ -242,27 +319,42 @@ local function generatePuzzle(n, difficulty, on_progress)
     end
     local best
     for _ = 1, MAX_ATTEMPTS do
+        if solves >= MAX_SOLVES then break end
         local region = makeRegions(n, lv.avg_tank)
         local tanks  = buildTanks(n, region)
-        local sol    = emptyGrid(n, n, false)
-        for _, tk in ipairs(tanks) do
-            local level = tk.rows[math.random(#tk.rows + 1)]   -- nil = dry
-            if level then
-                for _, p in ipairs(tk.cells) do
-                    if p[1] >= level then sol[p[1]][p[2]] = true end
+        local P
+        for _ = 1, LEVEL_ROLLS do
+            local sol    = emptyGrid(n, n, false)
+            for _, tk in ipairs(tanks) do
+                local level = tk.rows[math.random(#tk.rows + 1)]   -- nil = dry
+                if level then
+                    for _, p in ipairs(tk.cells) do
+                        if p[1] >= level then sol[p[1]][p[2]] = true end
+                    end
                 end
             end
-        end
-        local rc, cc = countLines(n, sol)
-        local cache = {}
-        tick()
-        local st, tier = Solver.solve(buildProblem(n, tanks, rc, cc, cache), lv.tier)
-        if st == "solved" then
-            rc, cc, tier = digClues(n, tanks, rc, cc, lv.tier, lv.max_hide(n), tier, cache, tick)
-            if not best or tier > best.tier then
-                best = { region = region, solution = sol, row_clues = rc, col_clues = cc, tier = tier }
+            local rc, cc = countLines(n, sol)
+            if P then
+                for r = 1, n do P.sums[P.row_sum[r]].clue = rc[r] end
+                for c = 1, n do P.sums[P.col_sum[c]].clue = cc[c] end
+            else
+                P = buildProblem(n, tanks, rc, cc)
             end
-            if tier == lv.tier then break end
+            tick()
+            local st, tier = Solver.solve(P, lv.tier)
+            if st == "solved" then
+                local rc0, cc0, tier0 = rc, cc, tier
+                rc, cc, tier = digClues(n, P, rc0, cc0, lv.tier, lv.max_hide(n), tier0, false, tick)
+                if tier < lv.tier then
+                    -- the plain dig fell short of the level: dig this grid
+                    -- again, seeking the clues that need the level's tier
+                    rc, cc, tier = digClues(n, P, rc0, cc0, lv.tier, lv.max_hide(n), tier0, true, tick)
+                end
+                if not best or tier > best.tier then
+                    best = { region = region, solution = sol, row_clues = rc, col_clues = cc, tier = tier }
+                end
+                if tier == lv.tier then return best end
+            end
         end
     end
     return best
@@ -292,7 +384,11 @@ end
 function AquariumBoard:generate(n, difficulty, on_progress)
     self.n          = n or self.n
     self.difficulty = difficulty or self.difficulty
-    local p = generatePuzzle(self.n, self.difficulty, on_progress)
+    -- A nil would need every candidate to be stuck with all its clues
+    -- shown, which has not been observed; loop anyway rather than hand the
+    -- screen a nil.
+    local p
+    repeat p = generatePuzzle(self.n, self.difficulty, on_progress) until p
     self.region    = p.region
     self.solution  = p.solution
     self.row_clues = p.row_clues

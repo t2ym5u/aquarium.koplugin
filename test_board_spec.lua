@@ -159,6 +159,25 @@ describe("AquariumBoard", function()
             end
         end)
 
+        -- 1.2.0: a grid whose plain dig falls short of the level is dug
+        -- again, seeking the clues that need line reasoning (tier 2), and a
+        -- layout gets several sets of water levels. Hard on 8x8 and 10x10
+        -- and medium on 10x10 then always reach tier 2 (8x8 medium: 99%,
+        -- 1.1.0: 84%), and 6x6 does more often than before.
+        it("medium and hard reach line reasoning", function()
+            for _, n in ipairs({ 8, 10 }) do
+                for seed = 1, 4 do
+                    assert.are.equal(2, newBoard(n, "hard", seed).tier)
+                    if n == 10 then assert.are.equal(2, newBoard(n, "medium", seed).tier) end
+                end
+            end
+            local reached = 0
+            for seed = 1, 10 do
+                if newBoard(6, "hard", seed).tier == 2 then reached = reached + 1 end
+            end
+            assert.is_true(reached >= 5)
+        end)
+
         -- Trial reasoning (tier 3) plays as guessing on paper: no level may
         -- need it. Hard is harder through more hidden clues instead.
         it("never needs trial reasoning; hard hides more clues than medium", function()

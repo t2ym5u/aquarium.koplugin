@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-04
+
+### Changed
+- Medium and Hard puzzles live up to their level more often: when hiding
+  clues at random leaves a grid too easy, the generator digs it again,
+  looking for the clues whose absence calls for reasoning on whole rows
+  and columns. On 8×8 and 10×10 virtually every Medium and Hard puzzle
+  now needs it (16% of 8×8 Medium puzzles did not); on 6×6, 45% of Medium puzzles
+  (was 13%) and 69% of Hard ones (was 64%). Still never any trial and
+  error.
+- Faster generation: each attempt to hide one more clue starts from what
+  the generator already worked out instead of solving the puzzle from
+  scratch, and a tank layout is tried with several water levels. The
+  search is now capped by a fixed amount of work, so a 6×6 puzzle takes
+  at most about 0.04 s on a desktop (Hard was up to 0.06 s; roughly 1 s
+  on a Kobo); 8×8 and 10×10 Hard from up to 0.04 s to 0.03 s and 0.02 s.
+  Puzzles for a given seed (Daily Challenge) differ from 1.1.0.
+- Uses less memory: the game loads when you open it, not when KOReader
+  starts, so it no longer takes memory or startup time while unplayed.
+
 ## [1.1.0] - 2026-11-04
 
 ### Changed
