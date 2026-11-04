@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-04
+
+### Changed
+- Faster puzzle generation, same puzzles: the logic solver that proves each
+  puzzle has exactly one solution now handles a tank's remaining levels all
+  at once and remembers what it already worked out for a row, and the
+  generator no longer rebuilds every row and column for each clue it tries
+  to hide. Hard went from up to 0.15 s to 0.06 s on 8×8, 0.10 s to 0.04 s
+  on 10×10 and 0.10 s to 0.06 s on 6×6 on a desktop (roughly 3.5 s → 1.5 s
+  on a Kobo); Medium 10×10 from 0.09 s to 0.03 s.
+- A progress bar shows while a puzzle is being generated, when it takes
+  more than a moment (needs game-common 1.12.0).
+
 ## [1.0.4] - 2026-11-03
 
 ### Changed

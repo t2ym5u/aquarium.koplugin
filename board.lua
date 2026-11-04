@@ -133,12 +133,19 @@ end
 -- The solver's view: one variable per tank, option k (1..#rows) = water up to
 -- rows[k] (every tank cell at that row or below is filled), option #rows+1 =
 -- dry. Each row/column clue is a sum over the tanks crossing that line.
-local function buildProblem(n, tanks, row_clues, col_clues)
+-- `cache` (optional, one per set of tanks) keeps the sum tables between the
+-- many problems a dig builds: a sum only depends on the tanks and its clue,
+-- and the solver never writes to one (it memoises on it, which is why
+-- sharing it pays).
+local function buildProblem(n, tanks, row_clues, col_clues, cache)
     local P = { nvars = #tanks, ksize = {}, sums = {} }
     for t, tk in ipairs(tanks) do P.ksize[t] = #tk.rows + 1 end
 
     for r = 1, n do
-        if row_clues[r] then
+        local key = cache and row_clues[r] and ("r" .. r .. ":" .. row_clues[r])
+        if key and cache[key] then
+            P.sums[#P.sums + 1] = cache[key]
+        elseif row_clues[r] then
             local s = { clue = row_clues[r], vars = {}, contrib = {} }
             for t, tk in ipairs(tanks) do
                 local cnt = 0
@@ -153,10 +160,14 @@ local function buildProblem(n, tanks, row_clues, col_clues)
                 end
             end
             P.sums[#P.sums + 1] = s
+            if key then cache[key] = s end
         end
     end
     for c = 1, n do
-        if col_clues[c] then
+        local key = cache and col_clues[c] and ("c" .. c .. ":" .. col_clues[c])
+        if key and cache[key] then
+            P.sums[#P.sums + 1] = cache[key]
+        elseif col_clues[c] then
             local s = { clue = col_clues[c], vars = {}, contrib = {} }
             for t, tk in ipairs(tanks) do
                 local in_col = false
@@ -176,6 +187,7 @@ local function buildProblem(n, tanks, row_clues, col_clues)
                 end
             end
             P.sums[#P.sums + 1] = s
+            if key then cache[key] = s end
         end
     end
     return P
@@ -194,7 +206,7 @@ end
 
 -- Hides clues one by one (random order) while the puzzle stays solvable
 -- within `cap`. Returns the final clues and the tier the last solve needed.
-local function digClues(n, tanks, rc, cc, cap, max_hide, tier)
+local function digClues(n, tanks, rc, cc, cap, max_hide, tier, cache, on_try)
     local order = {}
     for i = 1, 2 * n do order[i] = i end
     shuffle(order)
@@ -204,7 +216,8 @@ local function digClues(n, tanks, rc, cc, cap, max_hide, tier)
         local R, C = {}, {}
         for k = 1, n do R[k], C[k] = rc[k], cc[k] end
         if i <= n then R[i] = false else C[i - n] = false end
-        local st, t2 = Solver.solve(buildProblem(n, tanks, R, C), cap)
+        if on_try then on_try() end
+        local st, t2 = Solver.solve(buildProblem(n, tanks, R, C, cache), cap)
         if st == "solved" then
             rc, cc, tier, hidden = R, C, t2, hidden + 1
         end
@@ -216,8 +229,17 @@ end
 -- the solver (it deduces every tank's level); the first one whose hardest
 -- step equals the level's tier wins, otherwise the hardest seen is kept.
 -- Returns { region, solution, row_clues, col_clues, tier }.
-local function generatePuzzle(n, difficulty)
+-- `on_progress(fraction)`, optional, is called before every solve. The work
+-- has no fixed size (a level may take one candidate or all MAX_ATTEMPTS),
+-- so the fraction approaches 1 as solves pile up, against a typical run of
+-- a few candidates dug through every clue.
+local function generatePuzzle(n, difficulty, on_progress)
     local lv = LEVELS[difficulty] or LEVELS[DEFAULT_DIFF]
+    local solves, typical = 0, 3 * (1 + 2 * n)
+    local function tick()
+        solves = solves + 1
+        if on_progress then on_progress(solves / (solves + typical)) end
+    end
     local best
     for _ = 1, MAX_ATTEMPTS do
         local region = makeRegions(n, lv.avg_tank)
@@ -232,9 +254,11 @@ local function generatePuzzle(n, difficulty)
             end
         end
         local rc, cc = countLines(n, sol)
-        local st, tier = Solver.solve(buildProblem(n, tanks, rc, cc), lv.tier)
+        local cache = {}
+        tick()
+        local st, tier = Solver.solve(buildProblem(n, tanks, rc, cc, cache), lv.tier)
         if st == "solved" then
-            rc, cc, tier = digClues(n, tanks, rc, cc, lv.tier, lv.max_hide(n), tier)
+            rc, cc, tier = digClues(n, tanks, rc, cc, lv.tier, lv.max_hide(n), tier, cache, tick)
             if not best or tier > best.tier then
                 best = { region = region, solution = sol, row_clues = rc, col_clues = cc, tier = tier }
             end
@@ -264,10 +288,11 @@ function AquariumBoard:new(opts)
     return obj
 end
 
-function AquariumBoard:generate(n, difficulty)
+-- `on_progress(fraction)`: optional, for the screen's progress bar.
+function AquariumBoard:generate(n, difficulty, on_progress)
     self.n          = n or self.n
     self.difficulty = difficulty or self.difficulty
-    local p = generatePuzzle(self.n, self.difficulty)
+    local p = generatePuzzle(self.n, self.difficulty, on_progress)
     self.region    = p.region
     self.solution  = p.solution
     self.row_clues = p.row_clues

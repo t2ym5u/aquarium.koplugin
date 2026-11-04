@@ -19,6 +19,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase          = require("screen_base")
 local MenuHelper          = require("menu_helper")
+local GenProgress         = require("gen_progress")
 local AquariumBoard       = lrequire("board")
 local AquariumBoardWidget = lrequire("board_widget")
 
@@ -62,9 +63,16 @@ function AquariumScreen:init()
     local state = self.plugin:loadState()
     self.board = AquariumBoard:new{ generate = false }
     if not self.board:load(state) then
-        self.board:generate(self:_getN(), self:_getDiff())
+        self:_generate()
     end
     ScreenBase.init(self)
+end
+
+-- Medium and hard can take seconds on an e-reader: show a progress bar
+-- (it only appears once the work has run past a short delay).
+function AquariumScreen:_generate()
+    local n, diff = self:_getN(), self:_getDiff()
+    GenProgress.run(function(on_progress) self.board:generate(n, diff, on_progress) end)
 end
 
 function AquariumScreen:serializeState()
@@ -202,7 +210,7 @@ end
 
 function AquariumScreen:onNewGame()
     math.randomseed(os.time())
-    self.board:generate(self:_getN(), self:_getDiff())
+    self:_generate()
     self.hint_cell = nil
     self:_save()
     self:buildLayout()
